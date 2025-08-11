@@ -14,6 +14,10 @@
    * ```chmod 755 /usr/local/bin/ASL3-nodeconnector.sh```
  * Then give Asterisk ownership of the sound files ```chown -R asterisk:asterisk /var/lib/asterisk/sounds/custom/```
  * And read permissions ```chmod -R 644 /var/lib/asterisk/sounds/custom/```
+## Edit the rpt.conf file
+You will need to uncomments the following lines:
+ * In "Link commands" uncomment 11 and 13
+ * In "ilink commands" uncomment 811 and 813
  ## Dry Run
  You can test that everything is working by running ```ASL3-node-connector.sh --dry-run``` then checking the log after in ```/var/log/ASL3-node-connector.log```
  
