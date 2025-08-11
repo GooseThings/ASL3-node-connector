@@ -8,15 +8,15 @@ set -euo pipefail
 #############################################
 
 # --- CONFIGURABLE SETTINGS ---
-NODE=64549 # This is your node that this is installed on
+NODE=64549 # This is your node that this script is installed on
 TARGET=29972 # This is the node you want to automatically connect to
 IDLE_LIMIT=60  # seconds of idle time on ASL node before disconnect
-AUDIO_PATH="/var/lib/asterisk/sounds/custom" # directory where the WAV files are stored (recommended you put them here)
+AUDIO_PATH="/var/lib/asterisk/sounds/custom" # directory where the asterisk-owned WAV files are stored (recommended you put them here)
 
-EARLY_ANNOUNCE="10-min-generic-announcement" # Put your 10 minute warning announcement here
-EARLY_TIME=600 # The 10 minute announcement plays, and then it will wait this amount of time before connecting (in seconds)
+EARLY_ANNOUNCE="10-min-generic-announcement" # Put your early warning announcement here
+EARLY_TIME=600 # The amount of time the early announcement will play before connecting (in seconds)
 
-CONNECT_ANNOUNCE="link-generic-announcement" # connection announcement here
+CONNECT_ANNOUNCE="link-generic-announcement" # connection announcement here (no .WAV or .ulaw at the end)
 CONNECT_ANNOUNCE_TIME=20 # how long the announcement is (in seconds).
    # This is a dwell time so you connect after the announcement
    # If you shorten this to less than the announcement, then node will connect to the other node
@@ -29,7 +29,7 @@ LOGFILE="/var/log/ASL3-node-connector.log" # action log file
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=true
-    echo "🛠️  DRY RUN MODE ENABLED — no commands will be executed"
+    echo "DRY RUN MODE ENABLED — No commands will be executed - Verbose output will commence"
 fi
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S')  $*" | tee -a "$LOGFILE"; }
@@ -38,7 +38,7 @@ run_asterisk_cmd() {
     if $DRY_RUN; then
         log "[DRY RUN] Would run: asterisk -rx \"$*\""
     else
-        /usr/sbin/asterisk -rx "$@"
+        asterisk -rx "$@" # This command will not work unless the associated iLink macros (11, 14, 811, 814) in rpt.conf is uncommented
     fi
 }
 
@@ -46,7 +46,7 @@ play() {
     if $DRY_RUN; then
         log "[DRY RUN] Would play: $1"
     else
-        /usr/sbin/asterisk -rx "rpt playback $NODE $1"
+        asterisk -rx "rpt playback $NODE $1" # This command will not work unless asterisk has ownership of the sound file
     fi
 }
 
@@ -67,37 +67,80 @@ get_keyed_status() {
 }
 
 # --- STEP 1: Wait for repeater to be idle before early announcement ---
+
 log "Waiting for repeater to be idle before early announcement..."
+start_wait=$(date +%s)
 while :; do
-    get_keyed_status
-    if [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
+    if ! get_keyed_status; then
+        log "Retrying due to parse error..."
+    elif [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
         log "Repeater idle. Playing early announcement."
         play "$AUDIO_PATH/$EARLY_ANNOUNCE"
         break
+    else
+        log "Repeater busy. Rechecking in 20s..."
     fi
-    log "Repeater busy. Rechecking in 20s..."
+
+    if (( $(date +%s) - start_wait > 1800 )); then  # 30-minute timeout
+        log "Timeout waiting for idle before early announcement. Exiting."
+        exit 1
+    fi
     sleep 20
+done
+
+
+log "Waiting for repeater to be idle before early announcement..."
+start_wait=$(date +%s)
+while :; do
+    if ! get_keyed_status; then
+        log "Retrying due to parse error..."
+    elif [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
+        log "Repeater idle. Playing early announcement."
+        play "$AUDIO_PATH/$EARLY_ANNOUNCE"
+        break
+    else
+        log "Repeater busy. Rechecking in 20s..."
+    fi
+
+    if (( $(date +%s) - start_wait > 120 )); then  # Force announcement after 2 minutes
+        log "Timeout waiting for idle before early announcement — forcing continue."
+        play "$AUDIO_PATH/$EARLY_ANNOUNCE"
+        break
+    fi
+    sleep 10
 done
 
 sleep "$EARLY_TIME"
 
 # --- STEP 2: Wait for repeater to be idle before connection ---
 log "Waiting for repeater to be idle before connect announcement..."
+start_wait=$(date +%s)
 while :; do
-    get_keyed_status
-    if [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
+    if ! get_keyed_status; then
+        log "Retrying due to parse error..."
+    elif [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
         log "Repeater idle. Playing connect announcement."
         play "$AUDIO_PATH/$CONNECT_ANNOUNCE"
         sleep "$CONNECT_ANNOUNCE_TIME"
         log "Connecting to node $TARGET..."
         run_asterisk_cmd "rpt fun $NODE *813$TARGET"
         break
+    else
+        log "Repeater busy. Rechecking in 10s..."
     fi
-    log "Repeater busy. Rechecking in 10s..."
+
+    if (( $(date +%s) - start_wait > 120 )); then  # Force connection after 2-minutes
+        log "Timeout waiting for idle before connect — forcing continue."
+        play "$AUDIO_PATH/$CONNECT_ANNOUNCE"
+        sleep "$CONNECT_ANNOUNCE_TIME"
+        log "Connecting to node $TARGET..."
+        run_asterisk_cmd "rpt fun $NODE *813$TARGET"
+        break
+    fi
     sleep 10
 done
 
-sleep 300  # Let net settle
+sleep 300  # Let net settle. This gives 5 minutes of buffer once connected in case the net starts late for some reason.
 
 # --- STEP 3: Monitor for idle time ---
 log "Monitoring for idle time (limit: $IDLE_LIMIT seconds)..."
@@ -124,5 +167,5 @@ while :; do
         exit 0
     fi
 
-    sleep 20
+    sleep 10 # This is the frequency (in seconds) it will check to see if the node is idle.
 done
