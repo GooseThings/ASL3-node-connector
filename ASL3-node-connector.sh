@@ -38,7 +38,7 @@ run_asterisk_cmd() {
     if $DRY_RUN; then
         log "[DRY RUN] Would run: asterisk -rx \"$*\""
     else
-        asterisk -rx "$@"
+        /usr/sbin/asterisk -rx "$@"
     fi
 }
 
@@ -46,7 +46,7 @@ play() {
     if $DRY_RUN; then
         log "[DRY RUN] Would play: $1"
     else
-        asterisk -rx "rpt playback $NODE $1"
+        /usr/sbin/asterisk -rx "rpt playback $NODE $1"
     fi
 }
 
@@ -90,7 +90,7 @@ while :; do
         play "$AUDIO_PATH/$CONNECT_ANNOUNCE"
         sleep "$CONNECT_ANNOUNCE_TIME"
         log "Connecting to node $TARGET..."
-        run_asterisk_cmd "rpt fun $NODE *13$TARGET"
+        run_asterisk_cmd "rpt fun $NODE *813$TARGET"
         break
     fi
     log "Repeater busy. Rechecking in 10s..."
@@ -117,7 +117,7 @@ while :; do
 
     if (( CURRENT_TIME - LAST_ACTIVITY >= IDLE_LIMIT )); then
         log "Idle time exceeded. Disconnecting from node $TARGET..."
-        run_asterisk_cmd "rpt fun $NODE *14$TARGET"
+        run_asterisk_cmd "rpt fun $NODE *811$TARGET"
         sleep 3
         play "$AUDIO_PATH/$DISCONNECT_ANNOUNCE"
         log "Disconnected from node $TARGET. Exiting."
