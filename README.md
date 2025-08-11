@@ -17,6 +17,8 @@
    * ```sudo chmod 755 /usr/local/bin/ASL3-nodeconnector.sh```
  * Then give Asterisk ownership of the sound files ```chown -R asterisk:asterisk /var/lib/asterisk/sounds/custom/```
  * And sounds file read permissions ```chmod -R 644 /var/lib/asterisk/sounds/custom/```
+ * NOTE: Sound files have to be wav or ulaw, mono, and 6000Hz, for asterisk to play them. Use ffmpeg, or another audio format conversion software, to convert them to the proper format before setting ownership and permissions.
+ * If you do not want sound files to play then blank the file names in the settings section to just: ""
 ## Edit the rpt.conf file
 You will need to uncomments the following lines in **rpt.conf** file:
  * Use the command ```sudo asl-menu``` to enter the ASL screen, go to Expert Configuration, select rpt.conf
