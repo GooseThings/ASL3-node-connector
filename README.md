@@ -1,6 +1,7 @@
  # ASL Node Connector (ASLNC) 
  This script is meant to connect your ASL3 node to another node for a regularly scheduled net. It will make an announcement that it is connecting prior to linking (default set to 10 minutes), and then another announcement when it is making the connection. It will monitor the node for traffic during the net, and once it senses that the node has gone idle, it will disconnect, then make a disconnection announcement to let everyone know it is no longer connected.
  ## Release Notes
+ * 08/20/2025 - There is still a bug that is getting the script stuck on some instances but not others. Working on it.
  * 08/10/2025 - Fixed the infinite loop and added error handling to idle monitoring.
  * 08/07/2025 - The current version is hanging and going into a infinite loop. Working on a fix. Download at your own risk right now.
 
