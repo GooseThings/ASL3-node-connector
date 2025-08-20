@@ -26,6 +26,12 @@ DISCONNECT_ANNOUNCE="disconnect-generic-announcement" # announcement after disco
 LOGFILE="/var/log/ASL3-node-connector.log" # action log file
 # -----------------------------
 
+# Check if script is already running
+if pgrep -f "$(basename "$0")" | grep -qv $$; then
+    echo "Another instance of $(basename "$0") is already running."
+    exit 1
+fi
+
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=true
