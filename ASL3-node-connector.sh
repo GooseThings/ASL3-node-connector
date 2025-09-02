@@ -87,27 +87,6 @@ while :; do
         log "Repeater busy. Rechecking in 20s..."
     fi
 
-    if (( $(date +%s) - start_wait > 1800 )); then  # 30-minute timeout
-        log "Timeout waiting for idle before early announcement. Exiting."
-        exit 1
-    fi
-    sleep 20
-done
-
-
-log "Waiting for repeater to be idle before early announcement..."
-start_wait=$(date +%s)
-while :; do
-    if ! get_keyed_status; then
-        log "Retrying due to parse error..."
-    elif [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
-        log "Repeater idle. Playing early announcement."
-        play "$AUDIO_PATH/$EARLY_ANNOUNCE"
-        break
-    else
-        log "Repeater busy. Rechecking in 20s..."
-    fi
-
     if (( $(date +%s) - start_wait > 120 )); then  # Force announcement after 2 minutes
         log "Timeout waiting for idle before early announcement — forcing continue."
         play "$AUDIO_PATH/$EARLY_ANNOUNCE"
