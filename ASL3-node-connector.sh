@@ -43,7 +43,7 @@ play() {
     if $DRY_RUN; then
         log "[DRY RUN] Would play: $1"
     else
-        asterisk -rx "rpt playback $NODE $1"
+        /usr/sbin/asterisk -rx "rpt playback $NODE $1"
     fi
 }
 
