@@ -1,7 +1,7 @@
  # ASL Node Connector (ASLNC) 
  This script is meant to connect your ASL3 node to another node for a regularly scheduled net. It will make an announcement that it is connecting prior to linking (default set to 10 minutes), and then another announcement when it is making the connection. It will monitor the node for traffic during the net, and once it senses that the node has gone idle, it will disconnect, then make a disconnection announcement to let everyone know it is no longer connected.
  ## Release Notes
- * 12/09/2025 - The current rev works fine. The audio files are commented out, but I believe the fix for that is to use the full path to asterisk. Example: ```/usr/sbin/asterisk -rx playback 64349 /var/lib/asterisk/sounds/custom/WMEC-10min-proper"``` I just haven't had time to play with it, especially here around the holidays.
+ * 12/09/2025 - The current rev works fine. The audio files are commented out, but I believe the fix for that is to use the full path to asterisk. Example: ```/usr/sbin/asterisk -rx playback 64349 /var/lib/asterisk/sounds/custom/WMEC-10min-proper"```. I just haven't had time to play with it, especially here around the holidays.
  * 09/01/2025 - Looks like the issue with with the ASLNC-cron.log in the crontab. I've updated the install to omit it.
  * 08/20/2025 - There is still a bug that is getting the script stuck on some instances but not others. Working on it.
  * 08/10/2025 - Fixed the infinite loop and added error handling to idle monitoring.
@@ -12,6 +12,7 @@
  * Download ```ASL-node-connector.sh``` to ```/usr/local/bin``` or alternatively:
  * ```sudo git clone https://github.com/GooseThings/ASL3-node-connector.git```
  * Download audio files to: ```/var/lib/asterisk/sounds/custom``` (optional)
+ * To convert MP3's to ASL3 acceptable WAV files you can use FFMPEG. Example: ```ffmpeg -i input.mp3 -ac 1 -ar 8000 -sample_fmt s16 -filter:a "volume=0.5" output.wav```. If you don't have FFMPEG apt install it.
  * Setup the shell script by editing the .sh file: ```sudo nano /usr/local/bin/ASL3-node-connector.sh```
  * Run automatically at certain times via crontab using the command ```crontab -e```
    * Example of crontab command to run at 7:48PM on Wednesdays: ```48 19 * * 3 /usr/local/bin/ASL3-node-connector.sh```
