@@ -1,277 +1,193 @@
 #!/bin/bash
+set -euo pipefail
 
 #############################################
-# ASL3 Node Connector (ASLNC)
+# ASL3 Node Connector Script
 # By Goose - N8GMZ - 2025
 # https://github.com/GooseThings/ASL3-node-connector/
 #
-# Automatically connects your ASL3 node to a target node
-# at a scheduled time, monitors for inactivity, and
-# disconnects when the net goes idle.
+# Patched: idle-detection fix (fail-safe to idle, not active)
 #############################################
 
 # --- CONFIGURABLE SETTINGS ---
-
-NODE=64549                              # Your local ASL3 node number
-TARGET=666380                           # The node you want to connect to
-IDLE_LIMIT=180                          # Seconds of idle time before auto-disconnect
-AUDIO_PATH="/var/lib/asterisk/sounds/custom"  # Directory containing your WAV announcement files
-
-EARLY_ANNOUNCE="WMEC-10min-proper"      # Filename of early warning announcement (no extension)
-EARLY_TIME=10                           # Seconds before connecting to play early announcement
-
-CONNECT_ANNOUNCE="WMEC-con-proper"      # Filename of connection announcement (no extension)
-CONNECT_ANNOUNCE_TIME=20                # Seconds to wait after playing connection announcement
-                                        # before actually connecting. Must be >= announcement length.
-
-DISCONNECT_ANNOUNCE="WMEC-discon-proper" # Filename of disconnection announcement (no extension)
-
-LOGFILE="/var/log/ASL3-node-connector.log"  # Log file path
-
-# How long to wait after connecting before starting idle monitoring.
-# Gives the net time to get underway before the idle timer kicks in.
-NET_SETTLE_TIME=300                     # seconds (default: 5 minutes)
-
-# How frequently to poll the node status during idle monitoring.
-IDLE_POLL_INTERVAL=30                   # seconds
-
-# How long to wait for the repeater to go idle before forcing a connect or announcement.
-IDLE_WAIT_TIMEOUT=120                   # seconds
-
+NODE=64549                                       # This is your node that this script is installed on
+TARGET=666380                                    # This is the node you want to automatically connect to
+IDLE_LIMIT=180                                   # seconds of idle time on ASL node before disconnect
+AUDIO_PATH="/var/lib/asterisk/sounds/custom"     # directory where the asterisk-owned WAV files are stored
+EARLY_ANNOUNCE="WMEC-10min-proper"               # Put your early warning announcement here
+EARLY_TIME=10                                    # The amount of time the early announcement will play before connecting (in seconds)
+CONNECT_ANNOUNCE="WMEC-con-proper"               # connection announcement here (no .WAV or .ulaw at the end)
+CONNECT_ANNOUNCE_TIME=20                         # how long the announcement is (in seconds).
+                                                 # This is a dwell time so you connect after the announcement.
+                                                 # If you shorten this to less than the announcement, then node will connect to the other node
+                                                 # and you will hear the announcement on both nodes, which is bad.
+DISCONNECT_ANNOUNCE="WMEC-discon-proper"         # announcement after disconnect
+LOGFILE="/var/log/WMEC-connector.log"            # action log file
+ASTERISK_BIN="/usr/sbin/asterisk"                # full path to asterisk binary (helps under cron)
 # -----------------------------
 
-ASTERISK_BIN="/usr/sbin/asterisk"
-
-# --- DRY RUN SUPPORT ---
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=true
-    echo "DRY RUN MODE ENABLED -- No commands will be executed. Verbose output follows."
+    echo "DRY RUN MODE ENABLED — No commands will be executed - Verbose output will commence"
 fi
 
-# --- LOGGING ---
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOGFILE"
-}
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOGFILE"; }
 
-# --- PRE-FLIGHT CHECKS ---
-preflight_check() {
-    local errors=0
-
-    if [[ ! -x "$ASTERISK_BIN" ]]; then
-        log "ERROR: Asterisk binary not found or not executable at $ASTERISK_BIN"
-        errors=$((errors + 1))
-    fi
-
-    if [[ ! -w "$(dirname "$LOGFILE")" ]]; then
-        log "ERROR: Cannot write to log directory $(dirname "$LOGFILE"). Check permissions."
-        errors=$((errors + 1))
-    fi
-
-    if [[ -z "$NODE" || -z "$TARGET" ]]; then
-        log "ERROR: NODE and TARGET must both be set in the configuration section."
-        errors=$((errors + 1))
-    fi
-
-    if [[ "$NODE" == "$TARGET" ]]; then
-        log "ERROR: NODE and TARGET cannot be the same node number."
-        errors=$((errors + 1))
-    fi
-
-    if [[ $errors -gt 0 ]]; then
-        log "Pre-flight check failed with $errors error(s). Aborting."
-        exit 1
-    fi
-
-    log "Pre-flight checks passed."
-}
-
-# --- ASTERISK COMMAND WRAPPER ---
 run_asterisk_cmd() {
     if $DRY_RUN; then
-        log "[DRY RUN] Would run: $ASTERISK_BIN -rx \"$*\""
-        return 0
-    fi
-
-    local output
-    local exit_code
-
-    # Note: rpt fun commands (e.g. *3, *1 with iLink) require the corresponding
-    # entries in rpt.conf to be uncommented. See README for details.
-    output=$("$ASTERISK_BIN" -rx "$@" 2>&1)
-    exit_code=$?
-
-    if [[ $exit_code -ne 0 ]]; then
-        log "WARNING: Asterisk command returned exit code $exit_code. Output: $output"
+        log "[DRY RUN] Would run: asterisk -rx \"$*\""
     else
-        log "Asterisk command succeeded. Output: $output"
+        "$ASTERISK_BIN" -rx "$@"   # Requires the associated iLink macros (11, 14, 811, 814) in rpt.conf to be uncommented
     fi
-
-    return $exit_code
 }
 
-# --- AUDIO PLAYBACK ---
 play() {
-    local sound_file="$1"
     if $DRY_RUN; then
-        log "[DRY RUN] Would play: $sound_file"
-        return 0
+        log "[DRY RUN] Would play: $1"
+    else
+        "$ASTERISK_BIN" -rx "rpt playback $NODE $1"   # Requires asterisk to own the sound file
     fi
-
-    if [[ -z "$sound_file" ]]; then
-        log "No sound file specified, skipping playback."
-        return 0
-    fi
-
-    local full_path="$AUDIO_PATH/$sound_file"
-
-    if [[ ! -f "$full_path.wav" && ! -f "$full_path.ulaw" && ! -f "$full_path" ]]; then
-        log "WARNING: Sound file not found at $full_path (.wav or .ulaw). Skipping playback."
-        return 1
-    fi
-
-    # Note: asterisk must have ownership of the sound file for playback to work.
-    # Run: chown -R asterisk:asterisk $AUDIO_PATH
-    "$ASTERISK_BIN" -rx "rpt playback $NODE $full_path"
 }
 
-# --- NODE STATUS ---
+# get_keyed_status
+#
+# Sets globals RXKEYED and TXKEYED to "0" (idle), "1" (keyed), or "" (unknown).
+# Returns 0 on a successful, parseable read; returns non-zero if the asterisk
+# query failed or the keyed values could not be parsed. Callers MUST check the
+# return value and treat a failure as "unknown" — never as "active" — otherwise
+# transient CLI failures will continually reset the idle timer and the script
+# will never disconnect.
 get_keyed_status() {
-    local output
-    local exit_code
+    local output rc
 
-    if $DRY_RUN; then
-        RXKEYED=0
-        TXKEYED=0
-        return 0
-    fi
+    # Capture asterisk output without letting `set -e` abort the script if it fails.
+    output=$("$ASTERISK_BIN" -rx "rpt show variables $NODE" 2>/dev/null) || rc=$?
+    rc=${rc:-0}
 
-    output=$("$ASTERISK_BIN" -rx "rpt show variables $NODE" 2>&1)
-    exit_code=$?
-
-    if [[ $exit_code -ne 0 ]]; then
-        log "WARNING: Could not retrieve node variables (exit code $exit_code). Assuming busy."
-        RXKEYED=1
-        TXKEYED=1
+    if (( rc != 0 )) || [[ -z "$output" ]]; then
+        RXKEYED=""
+        TXKEYED=""
+        log "WARN: failed to read asterisk variables (rc=$rc, empty=$([[ -z "$output" ]] && echo yes || echo no))"
         return 1
     fi
 
-    RXKEYED=$(echo "$output" | awk -F= '/RPT_RXKEYED/ {gsub(/^[ \t]+/, "", $2); print $2}' | tr -d '\r\n[:space:]')
-    TXKEYED=$(echo "$output" | awk -F= '/RPT_TXKEYED/ {gsub(/^[ \t]+/, "", $2); print $2}' | tr -d '\r\n[:space:]')
+    RXKEYED=$(echo "$output" | awk -F= '/RPT_RXKEYED/ {gsub(/^[ \t]+|[ \t\r\n]+$/, "", $2); print $2; exit}')
+    TXKEYED=$(echo "$output" | awk -F= '/RPT_TXKEYED/ {gsub(/^[ \t]+|[ \t\r\n]+$/, "", $2); print $2; exit}')
 
-    # Default to busy (1) if we could not parse the values
-    RXKEYED=${RXKEYED:-1}
-    TXKEYED=${TXKEYED:-1}
+    RXKEYED=$(echo "$RXKEYED" | tr -d '\r\n[:space:]')
+    TXKEYED=$(echo "$TXKEYED" | tr -d '\r\n[:space:]')
 
-    log "Node status: RXKEYED='$RXKEYED', TXKEYED='$TXKEYED'"
+    # If we got no value, treat as unknown (NOT active). Empty / non-0 / non-1
+    # all collapse to "" so the caller can distinguish unknown from idle.
+    [[ "$RXKEYED" == "0" || "$RXKEYED" == "1" ]] || RXKEYED=""
+    [[ "$TXKEYED" == "0" || "$TXKEYED" == "1" ]] || TXKEYED=""
+
+    log "Parsed RXKEYED='$RXKEYED', TXKEYED='$TXKEYED'"
+
+    if [[ -z "$RXKEYED" || -z "$TXKEYED" ]]; then
+        return 1
+    fi
     return 0
 }
 
-# --- WAIT FOR IDLE ---
-# Waits up to IDLE_WAIT_TIMEOUT seconds for the repeater to go idle.
-# If it does not go idle in time, the callback is called anyway (forced).
-# Usage: wait_for_idle <description> <callback_function>
-wait_for_idle() {
-    local description="$1"
-    local callback="$2"
-    local start_wait
-    start_wait=$(date +%s)
+# --- STEP 1: Wait for repeater to be idle before early announcement ---
+# log "Waiting for repeater to be idle before early announcement..."
+# start_wait=$(date +%s)
+# while :; do
+#     if ! get_keyed_status; then
+#         log "Retrying due to parse error..."
+#     elif [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
+#         log "Repeater idle. Playing early announcement."
+#         play "$AUDIO_PATH/$EARLY_ANNOUNCE"
+#         break
+#     else
+#         log "Repeater busy. Rechecking in 20s..."
+#     fi
+#
+#     if (( $(date +%s) - start_wait > 120 )); then  # Force announcement after 2 minutes
+#         log "Timeout waiting for idle before early announcement — forcing continue."
+#         play "$AUDIO_PATH/$EARLY_ANNOUNCE"
+#         break
+#     fi
+#     sleep 10
+# done
+# sleep "$EARLY_TIME"
 
-    log "Waiting for repeater to be idle before: $description"
-
-    while :; do
-        if get_keyed_status; then
-            if [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
-                log "Repeater is idle. Proceeding with: $description"
-                $callback
-                return 0
-            else
-                log "Repeater is busy. Rechecking in 20 seconds..."
-            fi
-        else
-            log "Could not parse node status. Retrying in 20 seconds..."
-        fi
-
-        if (( $(date +%s) - start_wait >= IDLE_WAIT_TIMEOUT )); then
-            log "Timeout waiting for idle before $description. Forcing continuation."
-            $callback
-            return 0
-        fi
-
-        sleep 20
-    done
-}
-
-# ============================================================
-# STEP 1: Optional early announcement (uncomment to enable)
-# ============================================================
-# do_early_announce() {
-#     play "$EARLY_ANNOUNCE"
-#     sleep "$EARLY_TIME"
-# }
-# wait_for_idle "early announcement" do_early_announce
-
-# ============================================================
-# STEP 2: Wait for idle, play connect announcement, then connect
-# ============================================================
-do_connect() {
-    # Uncomment the two lines below to play a connection announcement before linking.
-    # The CONNECT_ANNOUNCE_TIME delay ensures the announcement finishes before connecting,
-    # so it does not go out over the linked node.
-    # play "$CONNECT_ANNOUNCE"
-    # sleep "$CONNECT_ANNOUNCE_TIME"
-
-    log "Connecting to node $TARGET..."
-    if ! run_asterisk_cmd "rpt fun $NODE *3$TARGET"; then
-        log "ERROR: Connect command failed. Check rpt.conf iLink entries and permissions."
-        exit 1
+# --- STEP 2: Wait for repeater to be idle before connection ---
+log "Waiting for repeater to be idle before connect announcement..."
+start_wait=$(date +%s)
+while :; do
+    if ! get_keyed_status; then
+        log "Retrying due to parse error..."
+    elif [[ "$RXKEYED" == "0" && "$TXKEYED" == "0" ]]; then
+        # log "Repeater idle. Playing connect announcement."
+        # play "$AUDIO_PATH/$CONNECT_ANNOUNCE"
+        # sleep "$CONNECT_ANNOUNCE_TIME"
+        log "Connecting to node $TARGET..."
+        run_asterisk_cmd "rpt fun $NODE *3$TARGET"
+        break
+    else
+        log "Repeater busy. Rechecking in 20s..."
     fi
-    log "Connect command sent to node $TARGET."
-}
 
-preflight_check
-wait_for_idle "connection" do_connect
+    if (( $(date +%s) - start_wait > 120 )); then  # Force connection after 2 minutes
+        log "Timeout waiting for idle before connect — forcing connection"
+        # play "$AUDIO_PATH/$CONNECT_ANNOUNCE"
+        # sleep "$CONNECT_ANNOUNCE_TIME"
+        log "Forced connecting to node $TARGET..."
+        run_asterisk_cmd "rpt fun $NODE *3$TARGET"
+        break
+    fi
+    sleep 20
+done
 
-log "Connected. Waiting $NET_SETTLE_TIME seconds before starting idle monitoring..."
-sleep "$NET_SETTLE_TIME"
+log "Successfully connected to node. Pausing for 5 minutes before monitoring for node being idle..."
+sleep 300  # Let net settle. 5 minutes of buffer once connected in case the net starts late.
 
-# ============================================================
-# STEP 3: Monitor for idle time and disconnect when net ends
-# ============================================================
-log "Starting idle monitoring (idle limit: $IDLE_LIMIT seconds, poll interval: $IDLE_POLL_INTERVAL seconds)..."
-
+# --- STEP 3: Monitor for idle time ---
+log "Monitoring for idle time (limit: $IDLE_LIMIT seconds)..."
 LAST_ACTIVITY=$(date +%s)
+CONSECUTIVE_PARSE_FAILURES=0
+MAX_PARSE_FAILURES=20  # ~10 minutes at 30s sleep — bail out rather than hang forever
 
 while :; do
-    if get_keyed_status; then
-        CURRENT_TIME=$(date +%s)
+    CURRENT_TIME=$(date +%s)
+
+    if ! get_keyed_status; then
+        # Could not determine state. Do NOT reset the timer (that was the old bug),
+        # and do NOT count this poll as activity. Just skip and try again.
+        CONSECUTIVE_PARSE_FAILURES=$(( CONSECUTIVE_PARSE_FAILURES + 1 ))
+        log "WARN: keyed status unknown — skipping this poll (failure ${CONSECUTIVE_PARSE_FAILURES}/${MAX_PARSE_FAILURES})"
+
+        if (( CONSECUTIVE_PARSE_FAILURES >= MAX_PARSE_FAILURES )); then
+            log "ERROR: too many consecutive parse failures. Forcing disconnect from node $TARGET as a safety measure..."
+            run_asterisk_cmd "rpt fun $NODE *1$TARGET"
+            sleep 5
+            # play "$AUDIO_PATH/$DISCONNECT_ANNOUNCE"
+            log "Disconnected from node $TARGET (forced due to repeated parse failures)"
+            exit 1
+        fi
+    else
+        CONSECUTIVE_PARSE_FAILURES=0
 
         if [[ "$RXKEYED" == "1" || "$TXKEYED" == "1" ]]; then
             LAST_ACTIVITY=$CURRENT_TIME
-            log "Activity detected. Idle timer reset."
+            log "Activity detected. Timer reset."
         else
-            IDLE_TIME=$(( CURRENT_TIME - LAST_ACTIVITY ))
-            log "Node idle for $IDLE_TIME seconds (limit: $IDLE_LIMIT)."
-
-            if (( IDLE_TIME >= IDLE_LIMIT )); then
-                log "Idle limit reached. Disconnecting from node $TARGET..."
-
-                if ! run_asterisk_cmd "rpt fun $NODE *1$TARGET"; then
-                    log "WARNING: Disconnect command may have failed. Check node status manually."
-                fi
-
-                sleep 5
-
-                # Uncomment to play a disconnection announcement after leaving the net.
-                # play "$DISCONNECT_ANNOUNCE"
-
-                log "Disconnected from node $TARGET. Script complete."
-                exit 0
-            fi
+            IDLE_TIME=$((CURRENT_TIME - LAST_ACTIVITY))
+            log "Idle time: $IDLE_TIME seconds."
         fi
-    else
-        log "Could not retrieve node status. Will retry next poll."
+
+        if (( CURRENT_TIME - LAST_ACTIVITY >= IDLE_LIMIT )); then
+            log "Idle time exceeded. Disconnecting from node $TARGET..."
+            run_asterisk_cmd "rpt fun $NODE *1$TARGET"
+            sleep 5
+            # play "$AUDIO_PATH/$DISCONNECT_ANNOUNCE"
+            log "Disconnected from node $TARGET"
+            exit 0
+        fi
     fi
 
-    sleep "$IDLE_POLL_INTERVAL"
+    sleep 30  # Frequency (in seconds) at which to check whether the node is idle.
 done
