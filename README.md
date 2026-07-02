@@ -9,11 +9,14 @@ It is designed to run unattended from cron, so your node connects at net time an
 ## How it works
 
 1. The script waits for your repeater to be idle, then sends the connect command to ASL.
-2. After connecting, it pauses for a configurable settle time to let the net get started.
-3. It then polls the node at regular intervals, tracking how long the node has been idle.
-4. When the idle time exceeds the configured limit, it sends the disconnect command and exits.
+2. **It verifies the link actually came up** (`rpt lstats`) and retries if it didn't — the Asterisk CLI reports success even when the command silently did nothing, which is the most common install problem.
+3. After connecting, it pauses for a configurable settle time to let the net get started.
+4. It then polls the node at regular intervals, tracking how long the node has been idle.
+5. When the idle time exceeds the configured limit, it sends the disconnect command (verified the same way) and exits.
 
-Optional audio announcements can be played before connecting and after disconnecting. These are disabled by default and can be enabled by editing the script.
+Optional audio announcements can be played before connecting and after disconnecting. They are played with `rpt localplay`, so they are heard only on your local node — never transmitted over the link.
+
+Only one instance can run per node at a time: if a previous run is still going (for example a net that ran long), an overlapping cron start logs a message and exits instead of fighting over the link.
 
 ---
 
@@ -23,7 +26,7 @@ Optional audio announcements can be played before connecting and after disconnec
 - Asterisk (installed as part of ASL3)
 - bash
 - A working node number registered with AllStarLink
-- The iLink commands in `rpt.conf` must be uncommented (see below)
+- The link commands in `rpt.conf` must be uncommented (see below)
 
 ---
 
@@ -45,8 +48,8 @@ sudo bash aslnc-setup.sh
 ```
 
 From the menu you can:
-- Install the script to `/usr/local/bin`
-- Set your node numbers, timers, and paths
+- Install the script to `/usr/local/bin` (and optionally the bundled generic announcement audio)
+- Set your node numbers, timers, paths, and announcements
 - Check that all permissions and system requirements are correct
 - Automatically fix common permission problems
 - Add or remove crontab schedule entries
@@ -55,48 +58,51 @@ From the menu you can:
 
 ### Step 3: Install manually (alternative to the setup script)
 
-If you prefer to install manually:
-
 ```bash
 sudo cp ASL3-node-connector.sh /usr/local/bin/ASL3-node-connector.sh
 sudo chmod 755 /usr/local/bin/ASL3-node-connector.sh
 sudo chown root:root /usr/local/bin/ASL3-node-connector.sh
 ```
 
+Then create `/etc/asl3-node-connector.conf` by hand (see Configuration below). The script refuses to run until `NODE` and `TARGET` are configured.
+
 ---
 
 ## Configuration
 
-Open the script in a text editor:
+All settings live in `/etc/asl3-node-connector.conf` — **not** in the script itself — so upgrading the script never wipes your configuration. The easiest way to create or change it is the setup menu (`sudo bash aslnc-setup.sh`, option 2). A minimal config looks like:
 
 ```bash
-sudo nano /usr/local/bin/ASL3-node-connector.sh
+NODE=12345
+TARGET=67890
 ```
 
-Edit the settings section near the top of the file:
+Any setting not present in the conf file uses the script's built-in default.
 
-| Setting | Description |
-|---|---|
-| `NODE` | Your local ASL3 node number |
-| `TARGET` | The node number you want to connect to |
-| `IDLE_LIMIT` | Seconds of inactivity before auto-disconnect (default: 180) |
-| `AUDIO_PATH` | Directory where your WAV announcement files are stored |
-| `EARLY_ANNOUNCE` | Filename of the early warning announcement (without extension) |
-| `EARLY_TIME` | Seconds before connecting to play the early announcement |
-| `CONNECT_ANNOUNCE` | Filename of the connection announcement (without extension) |
-| `CONNECT_ANNOUNCE_TIME` | How long to wait after playing the connect announcement before linking. This must be at least as long as the announcement, or the announcement will play over the linked node. |
-| `DISCONNECT_ANNOUNCE` | Filename of the disconnection announcement (without extension) |
-| `LOGFILE` | Full path to the log file |
-| `NET_SETTLE_TIME` | Seconds to wait after connecting before starting idle monitoring (default: 300) |
-| `IDLE_POLL_INTERVAL` | How often to check for idle status in seconds (default: 30) |
+| Setting | Default | Description |
+|---|---|---|
+| `NODE` | *(required)* | Your local ASL3 node number |
+| `TARGET` | *(required)* | The node number you want to connect to |
+| `IDLE_LIMIT` | `180` | Seconds of inactivity before auto-disconnect |
+| `NET_SETTLE_TIME` | `300` | Seconds to wait after connecting before idle monitoring starts |
+| `IDLE_POLL_INTERVAL` | `30` | How often to check for idle status, in seconds |
+| `PERMANENT_LINK` | `false` | `true` uses the permanent-link commands `*813`/`*811`; `false` uses `*3`/`*1` |
+| `AUDIO_PATH` | `/var/lib/asterisk/sounds/custom` | Directory where your announcement files are stored |
+| `EARLY_ANNOUNCE` | *(empty = disabled)* | Filename of the early warning announcement (no extension) |
+| `EARLY_TIME` | `600` | Seconds between the early announcement and the connect phase |
+| `CONNECT_ANNOUNCE` | *(empty = disabled)* | Filename of the connection announcement (no extension) |
+| `CONNECT_ANNOUNCE_TIME` | `20` | Dwell after playing the connect announcement, before linking. Must be at least as long as the audio, or it will still be playing when the link comes up and be heard on the far node. |
+| `DISCONNECT_ANNOUNCE` | *(empty = disabled)* | Filename of the disconnection announcement (no extension) |
+| `LOGFILE` | `/var/log/ASL3-node-connector.log` | Full path to the log file |
+| `LOG_MAX_BYTES` | `1048576` | Log rotates to `.old` when it grows past this size |
 
-If you do not want audio announcements, leave the filename variables set to empty strings (`""`). If you want the early announcement or connect/disconnect announcements enabled, uncomment the relevant lines in the script as directed by the inline comments.
+Announcements are enabled simply by setting their filename — no script editing required. Leave them empty (`""`) to disable.
 
 ---
 
 ## Configuring rpt.conf
 
-The script uses Asterisk's `rpt fun` commands to connect and disconnect nodes. These commands require specific entries in `rpt.conf` to be uncommented. By default they are commented out in a fresh ASL3 installation.
+The script uses Asterisk's `rpt fun` commands to connect and disconnect nodes. These commands require specific entries in the `[functions]` section of `rpt.conf` to be uncommented. By default some are commented out in a fresh ASL3 installation.
 
 To uncomment them:
 
@@ -106,12 +112,8 @@ sudo asl-menu
 
 Navigate to: Expert Configuration > rpt.conf
 
-Find the "Link commands" section and uncomment lines 11 and 13.
-Find the "iLink commands" section and uncomment lines 811 and 813.
-
-The recommended setup is to use 813 to make a permanent connection and 811 to disconnect a permanent connection. This is more reliable than the `*3` / `*1` commands if a connection drops during the net.
-
-If you prefer to use `*3` and `*1` instead, you can change the connect and disconnect commands in the script accordingly. The relevant lines are documented in the script with inline comments.
+- With the default `PERMANENT_LINK=false`, the script uses `*3` (connect) and `*1` (disconnect) — functions `1` and `3` must be active.
+- With `PERMANENT_LINK=true`, the script uses `*813` (permanently connect) and `*811` (disconnect a permanent link) — functions `811` and `813` must be active. A permanent link is more reliable for nets because ASL automatically re-establishes it if the connection drops mid-net.
 
 After editing rpt.conf, reload Asterisk:
 
@@ -119,11 +121,13 @@ After editing rpt.conf, reload Asterisk:
 sudo systemctl reload asterisk
 ```
 
+If the required functions are commented out, the connect command does nothing — Asterisk does not report an error. The script detects this by checking the actual link state afterward, retries three times, and logs a clear error telling you which functions to uncomment.
+
 ---
 
 ## Audio Announcements
 
-Audio files must meet the following requirements for Asterisk to play them:
+The repository ships three ready-to-use generic announcements in the `audio/` folder (a 10-minute warning, a link announcement, and a disconnect announcement); the setup script offers to install them for you. To use your own audio, files must meet the following requirements for Asterisk to play them:
 
 - Format: WAV or ulaw
 - Channels: mono
@@ -147,10 +151,14 @@ After placing files, set correct ownership and permissions so Asterisk can read 
 
 ```bash
 sudo chown -R asterisk:asterisk /var/lib/asterisk/sounds/custom
-sudo chmod -R 644 /var/lib/asterisk/sounds/custom
+sudo find /var/lib/asterisk/sounds/custom -type f -exec chmod 644 {} +
 ```
 
-Then enable the announcement lines in the script by removing the comment characters from the relevant `play` and `sleep` lines.
+(Do not use `chmod -R 644` on the directory itself — that strips the directory's execute bit and makes the files unreachable.)
+
+Then set the announcement names (without extension) in `/etc/asl3-node-connector.conf`.
+
+Announcements are played with `rpt localplay`, so they go out over your local node's transmitter only — they are not sent to the target node or any other connected links.
 
 ---
 
@@ -176,7 +184,9 @@ Example to run every Wednesday at 7:48 PM:
 48 19 * * 3 /usr/local/bin/ASL3-node-connector.sh
 ```
 
-The cron time should be set to when you want the script to start watching for the node to be idle before connecting, not the exact time you want it to connect. If the net starts at 8:00 PM and you want a 10-minute early warning, schedule the script to start at approximately 7:48 PM.
+The cron time should be set to when you want the script to start, not the exact time you want it to connect. If `EARLY_ANNOUNCE` is set, the script plays it once the repeater is idle and then waits `EARLY_TIME` seconds before connecting — so for an 8:00 PM net with a 10-minute warning, schedule the script for about 7:48 PM with `EARLY_TIME=600`.
+
+If a previous run is still going when cron fires again, the new run exits immediately (single-instance lock), so overlapping schedules are safe.
 
 ---
 
@@ -192,6 +202,7 @@ Select option 3 from the menu to run the checker. It will report on:
 
 - Whether Asterisk is installed and running
 - Whether the script is executable with correct ownership
+- Whether the config file exists with NODE and TARGET set
 - Whether audio files have correct ownership and permissions
 - Whether the log directory is writable
 - Whether the required rpt.conf entries appear to be active
@@ -215,13 +226,13 @@ All logic runs normally and all steps are logged, but no Asterisk commands are e
 cat /var/log/ASL3-node-connector.log
 ```
 
-For faster testing, temporarily reduce `IDLE_LIMIT`, `NET_SETTLE_TIME`, and `EARLY_TIME` to small values (such as 10-30 seconds) before running a dry run. Restore them to production values when done.
+For faster testing, temporarily reduce `IDLE_LIMIT`, `NET_SETTLE_TIME`, and `EARLY_TIME` to small values (such as 10-30 seconds) in the conf file. Restore them to production values when done.
 
 ---
 
 ## Log File
 
-The script logs all actions with timestamps to the file specified by `LOGFILE` (default: `/var/log/ASL3-node-connector.log`).
+The script logs all actions with timestamps to the file specified by `LOGFILE` (default: `/var/log/ASL3-node-connector.log`). When the log exceeds `LOG_MAX_BYTES` (1 MB by default) it is rotated to `<logfile>.old` at the next script start, so it cannot grow unbounded.
 
 To follow the log in real time while the script is running:
 
@@ -234,19 +245,31 @@ tail -f /var/log/ASL3-node-connector.log
 ## Troubleshooting
 
 **The script runs but the node does not connect.**
-Check that the iLink commands 811 and 813 are uncommented in rpt.conf and that Asterisk was reloaded afterward. Run the permission checker to verify the script has execute permissions. Check the log file for error messages from the Asterisk command.
+The log will now tell you directly: if the link never comes up, the script retries three times and logs which rpt.conf `[functions]` entries need to be uncommented (`1`/`3` for normal links, `811`/`813` for permanent links). Reload Asterisk after editing rpt.conf.
 
 **Audio announcements do not play.**
-Confirm the audio files exist at the path configured in `AUDIO_PATH`, that they are in mono 8000 Hz WAV or ulaw format, and that Asterisk owns them (`chown -R asterisk:asterisk`). Check that the `play` lines in the script are uncommented.
+Confirm the audio files exist at the path configured in `AUDIO_PATH`, that they are in mono 8000 Hz WAV or ulaw format, and that Asterisk owns them (`chown -R asterisk:asterisk`). The log records a warning naming the exact missing file when an announcement can't be found.
 
 **The script exits immediately.**
-Check the log file. A pre-flight check failure will cause an immediate exit with an error message explaining what is wrong. Common causes are a missing Asterisk binary or a log directory that is not writable.
+Check the log file (and the console output if run by hand). Pre-flight checks fail fast with a message when `NODE`/`TARGET` are unset or the Asterisk binary is missing. "Another instance is already running" means a previous run is still active — or a stale process is stuck; find it with `pgrep -a -f ASL3-node-connector`.
 
 **The cron job does not appear to run.**
 Make sure the crontab was added to root's crontab (`sudo crontab -e`), not the current user's crontab. Also confirm the script path in the crontab entry matches the installed location exactly.
 
 **Permission denied when executing link commands.**
-Run `sudo bash aslnc-setup.sh` and select the permission checker (option 3) and the auto-fix option (option 4). If problems persist, review the rpt.conf iLink section manually.
+Run `sudo bash aslnc-setup.sh` and select the permission checker (option 3) and the auto-fix option (option 4). If problems persist, review the rpt.conf functions section manually.
+
+---
+
+## Upgrading from older versions
+
+Older versions stored settings directly in the script and enabled announcements by uncommenting lines. When upgrading:
+
+1. Note your current settings from the top of your installed `/usr/local/bin/ASL3-node-connector.sh`.
+2. Install the new script (setup menu option 1).
+3. Enter those settings in the Configure menu (option 2) — they now live in `/etc/asl3-node-connector.conf` and will survive future upgrades.
+
+Announcements now use `rpt localplay` (local node only) instead of `rpt playback` (all connected links).
 
 ---
 
