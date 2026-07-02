@@ -13,6 +13,7 @@
 #############################################
 
 SCRIPT_TARGET="/usr/local/bin/ASL3-node-connector.sh"
+CONF_FILE="/etc/asl3-node-connector.conf"
 AUDIO_DIR="/var/lib/asterisk/sounds/custom"
 LOGFILE="/var/log/ASL3-node-connector.log"
 ASTERISK_BIN="/usr/sbin/asterisk"
@@ -188,9 +189,30 @@ check_permissions() {
             pass "All audio files have correct permissions (644)."
         else
             fail "$bad_perms audio file(s) do not have 644 permissions."
-            info "Fix with: sudo chmod -R 644 $AUDIO_DIR"
+            info "Fix with: sudo find $AUDIO_DIR -type f -exec chmod 644 {} +"
             issues=$((issues + 1))
         fi
+    fi
+
+    echo ""
+    echo -e "${DIM}--- Configuration ---${RESET}"
+
+    # Config file exists with NODE/TARGET set
+    if [[ -f "$CONF_FILE" ]]; then
+        local conf_node conf_target
+        conf_node=$(grep -E "^NODE=" "$CONF_FILE" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' "')
+        conf_target=$(grep -E "^TARGET=" "$CONF_FILE" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' "')
+        if [[ "$conf_node" =~ ^[0-9]+$ && "$conf_target" =~ ^[0-9]+$ ]]; then
+            pass "Config file $CONF_FILE sets NODE=$conf_node TARGET=$conf_target."
+        else
+            fail "Config file $CONF_FILE exists but NODE/TARGET are not set correctly."
+            info "Run the Configure option from the main menu."
+            issues=$((issues + 1))
+        fi
+    else
+        fail "Config file $CONF_FILE not found — the script will refuse to run."
+        info "Run the Configure option from the main menu to create it."
+        issues=$((issues + 1))
     fi
 
     echo ""
@@ -328,81 +350,95 @@ fix_permissions() {
 }
 
 # -----------------------------------------------
-# Configure the main script
+# Configure (writes /etc/asl3-node-connector.conf)
+#
+# Settings live in a conf file the main script sources at startup, NOT in
+# the script itself — so reinstalling/upgrading the script never wipes the
+# user's configuration (the old sed-edit-the-script approach did).
 # -----------------------------------------------
+
+# conf_get <VAR> — current effective value: conf file wins, else script default.
+conf_get() {
+    local name="$1" val=""
+    if [[ -f "$CONF_FILE" ]]; then
+        val=$(grep -E "^${name}=" "$CONF_FILE" 2>/dev/null | tail -1 \
+              | cut -d= -f2- | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs)
+    fi
+    if [[ -z "$val" && -f "$SCRIPT_TARGET" ]]; then
+        val=$(grep -E "^${name}=" "$SCRIPT_TARGET" 2>/dev/null | head -1 \
+              | cut -d= -f2- | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs)
+    fi
+    echo "$val"
+}
+
+# ask <prompt> <current> <varname> — prompt with default, store the answer.
+ask() {
+    local prompt="$1" cur="$2" var="$3" new_val
+    read -rp "  ${prompt} [${cur}]: " new_val
+    printf -v "$var" '%s' "${new_val:-$cur}"
+}
 
 configure_script() {
     header
-    echo -e "${BOLD}Configure ASL3-node-connector.sh${RESET}"
+    echo -e "${BOLD}Configure ASL3 Node Connector${RESET}"
+    echo ""
+    echo "Settings are stored in $CONF_FILE and survive script upgrades."
+    echo "Press ENTER to keep the value shown in brackets."
+    echo "For announcements, an empty value (or entering 'none') disables that announcement."
     echo ""
 
-    if [[ ! -f "$SCRIPT_TARGET" ]]; then
-        echo -e "${RED}Script not found at $SCRIPT_TARGET.${RESET}"
-        echo "Please install the script first using the Install option from the main menu."
+    local c_node c_target c_idle c_settle c_poll c_perm c_audio
+    local c_early c_earlytime c_conn c_conntime c_disc c_logfile
+
+    ask "Your node number         " "$(conf_get NODE)"                  c_node
+    ask "Target node number       " "$(conf_get TARGET)"                c_target
+    ask "Idle limit (seconds)     " "$(conf_get IDLE_LIMIT)"            c_idle
+    ask "Net settle time (sec)    " "$(conf_get NET_SETTLE_TIME)"       c_settle
+    ask "Idle poll interval (s)   " "$(conf_get IDLE_POLL_INTERVAL)"    c_poll
+    ask "Permanent link? (true/false)" "$(conf_get PERMANENT_LINK)"     c_perm
+    ask "Audio path               " "$(conf_get AUDIO_PATH)"            c_audio
+    ask "Early announcement       " "$(conf_get EARLY_ANNOUNCE)"        c_early
+    ask "Early lead time (sec)    " "$(conf_get EARLY_TIME)"            c_earlytime
+    ask "Connect announcement     " "$(conf_get CONNECT_ANNOUNCE)"      c_conn
+    ask "Connect announce dwell(s)" "$(conf_get CONNECT_ANNOUNCE_TIME)" c_conntime
+    ask "Disconnect announcement  " "$(conf_get DISCONNECT_ANNOUNCE)"   c_disc
+    ask "Log file path            " "$(conf_get LOGFILE)"               c_logfile
+
+    # 'none' is an explicit way to clear an announcement (plain ENTER keeps it)
+    [[ "${c_early,,}" == "none" ]] && c_early=""
+    [[ "${c_conn,,}"  == "none" ]] && c_conn=""
+    [[ "${c_disc,,}"  == "none" ]] && c_disc=""
+
+    if [[ ! "$c_node" =~ ^[0-9]+$ || ! "$c_target" =~ ^[0-9]+$ ]]; then
+        echo ""
+        echo -e "${RED}NODE and TARGET must both be set to node numbers. Nothing saved.${RESET}"
         pause
         return
     fi
 
-    echo "Current settings (read from $SCRIPT_TARGET):"
-    echo ""
-
-    # Read current values
-    local cur_node cur_target cur_idle cur_audio cur_logfile cur_settle cur_poll
-    cur_node=$(grep    -E "^\s*NODE="     "$SCRIPT_TARGET" | head -1 | cut -d= -f2 | tr -d ' "')
-    cur_target=$(grep  -E "^\s*TARGET="   "$SCRIPT_TARGET" | head -1 | cut -d= -f2 | tr -d ' "')
-    cur_idle=$(grep    -E "^\s*IDLE_LIMIT=" "$SCRIPT_TARGET" | head -1 | cut -d= -f2 | tr -d ' "' | awk '{print $1}')
-    cur_audio=$(grep   -E "^\s*AUDIO_PATH=" "$SCRIPT_TARGET" | head -1 | cut -d= -f2- | tr -d '"' | awk '{print $1}')
-    cur_logfile=$(grep -E "^\s*LOGFILE="  "$SCRIPT_TARGET" | head -1 | cut -d= -f2- | tr -d '"' | awk '{print $1}')
-    cur_settle=$(grep  -E "^\s*NET_SETTLE_TIME=" "$SCRIPT_TARGET" | head -1 | cut -d= -f2 | tr -d ' "' | awk '{print $1}')
-    cur_poll=$(grep    -E "^\s*IDLE_POLL_INTERVAL=" "$SCRIPT_TARGET" | head -1 | cut -d= -f2 | tr -d ' "' | awk '{print $1}')
-
-    printf "  %-30s %s\n" "Your node number (NODE):"         "${cur_node:-not set}"
-    printf "  %-30s %s\n" "Target node (TARGET):"            "${cur_target:-not set}"
-    printf "  %-30s %s\n" "Idle limit in seconds:"           "${cur_idle:-not set}"
-    printf "  %-30s %s\n" "Audio path:"                      "${cur_audio:-not set}"
-    printf "  %-30s %s\n" "Log file:"                        "${cur_logfile:-not set}"
-    printf "  %-30s %s\n" "Net settle time (seconds):"       "${cur_settle:-not set}"
-    printf "  %-30s %s\n" "Idle poll interval (seconds):"    "${cur_poll:-not set}"
-
-    echo ""
-    echo "Enter new values below. Press ENTER to keep the current value."
-    echo ""
-
-    local new_val
-
-    read -rp "  Your node number       [${cur_node}]: " new_val
-    [[ -n "$new_val" ]] && sed -i "s/^\s*NODE=.*/NODE=$new_val/" "$SCRIPT_TARGET"
-    [[ -n "$new_val" ]] && cur_node="$new_val"
-
-    read -rp "  Target node number     [${cur_target}]: " new_val
-    [[ -n "$new_val" ]] && sed -i "s/^\s*TARGET=.*/TARGET=$new_val/" "$SCRIPT_TARGET"
-
-    read -rp "  Idle limit (seconds)   [${cur_idle}]: " new_val
-    [[ -n "$new_val" ]] && sed -i "s/^\s*IDLE_LIMIT=.*/IDLE_LIMIT=$new_val/" "$SCRIPT_TARGET"
-
-    read -rp "  Audio path             [${cur_audio}]: " new_val
-    if [[ -n "$new_val" ]]; then
-        # Escape slashes for sed
-        local escaped_val
-        escaped_val=$(printf '%s\n' "$new_val" | sed 's/[\/&]/\\&/g')
-        sed -i "s|^\s*AUDIO_PATH=.*|AUDIO_PATH=\"$escaped_val\"|" "$SCRIPT_TARGET"
-    fi
-
-    read -rp "  Log file path          [${cur_logfile}]: " new_val
-    if [[ -n "$new_val" ]]; then
-        local escaped_val
-        escaped_val=$(printf '%s\n' "$new_val" | sed 's/[\/&]/\\&/g')
-        sed -i "s|^\s*LOGFILE=.*|LOGFILE=\"$escaped_val\"|" "$SCRIPT_TARGET"
-    fi
-
-    read -rp "  Net settle time (sec)  [${cur_settle}]: " new_val
-    [[ -n "$new_val" ]] && sed -i "s/^\s*NET_SETTLE_TIME=.*/NET_SETTLE_TIME=$new_val/" "$SCRIPT_TARGET"
-
-    read -rp "  Idle poll interval (s) [${cur_poll}]: " new_val
-    [[ -n "$new_val" ]] && sed -i "s/^\s*IDLE_POLL_INTERVAL=.*/IDLE_POLL_INTERVAL=$new_val/" "$SCRIPT_TARGET"
+    cat > "$CONF_FILE" <<EOF
+# ASL3 Node Connector configuration
+# Written by aslnc-setup.sh on $(date '+%Y-%m-%d %H:%M:%S')
+# Sourced by ASL3-node-connector.sh; anything not set here uses the
+# script's built-in default.
+NODE=$c_node
+TARGET=$c_target
+IDLE_LIMIT=$c_idle
+NET_SETTLE_TIME=$c_settle
+IDLE_POLL_INTERVAL=$c_poll
+PERMANENT_LINK=$c_perm
+AUDIO_PATH="$c_audio"
+EARLY_ANNOUNCE="$c_early"
+EARLY_TIME=$c_earlytime
+CONNECT_ANNOUNCE="$c_conn"
+CONNECT_ANNOUNCE_TIME=$c_conntime
+DISCONNECT_ANNOUNCE="$c_disc"
+LOGFILE="$c_logfile"
+EOF
+    chmod 644 "$CONF_FILE"
 
     echo ""
-    echo -e "${GREEN}Configuration saved to $SCRIPT_TARGET${RESET}"
+    echo -e "${GREEN}Configuration saved to $CONF_FILE${RESET}"
     pause
 }
 
@@ -460,6 +496,16 @@ install_script() {
         fi
     fi
 
+    # Offer to install the bundled generic announcements
+    if [[ -d "$script_dir/audio" && -d "$AUDIO_DIR" ]]; then
+        if confirm "Install the bundled generic announcement WAVs to $AUDIO_DIR?"; then
+            cp "$script_dir/audio/"*.wav "$AUDIO_DIR/"
+            chown asterisk:asterisk "$AUDIO_DIR"/*.wav
+            chmod 644 "$AUDIO_DIR"/*.wav
+            echo -e "${GREEN}Installed bundled announcements (use them by name, e.g. 'link-generic-announcement').${RESET}"
+        fi
+    fi
+
     # Create log file stub
     if [[ ! -f "$LOGFILE" ]]; then
         touch "$LOGFILE"
@@ -468,7 +514,12 @@ install_script() {
     fi
 
     echo ""
-    echo "Installation complete. Use the Configure option to set your node numbers."
+    if [[ -f "$CONF_FILE" ]]; then
+        echo "Installation complete. Existing configuration at $CONF_FILE was kept."
+    else
+        echo "Installation complete. Use the Configure option to set your node numbers."
+        echo "(The script will not run until $CONF_FILE exists with NODE and TARGET set.)"
+    fi
     pause
 }
 
@@ -574,7 +625,7 @@ view_log() {
         2) less "$LOGFILE" ;;
         3)
             if confirm "Clear the log file?"; then
-                > "$LOGFILE"
+                : > "$LOGFILE"
                 echo "Log cleared."
             fi
             ;;
